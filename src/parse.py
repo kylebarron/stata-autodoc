@@ -1,33 +1,24 @@
 import re
 from pathlib import Path
 from typing import Dict, List
-
-def main():
-    path = Path.home()
-    path = path / 'doyle' / 'eosloan' / 'geisinger' / 'code' / '05match_explore.do'
-
-    with open(path, 'r') as f:
-        lines = f.readlines()
-
-    pgms = find_programs(text)
-
-    pgm_name = 'reg_a1c'
-    pgm_range = [284, 412]
-    for pgm_name, pgm_range in pgms.items():
-        doc_range = find_docstring(text, pgm_range)
-        syntax_range = find_syntax_cmd(text, pgm_range)
-        parse_syntax_command(text, syntax_range)
-
-    pgms
+from textwrap import dedent
 
 
 class DocstringParse(object):
-    def __init__(self, lines: List[str]):
+    def __init__(self, path):
+        """Parse an entire file
+        """
+
+        self.path = Path(path).resolve()
+        with open(self.path, 'r') as f:
+            lines = f.readlines()
 
         pgms = self.find_programs(lines)
-        for pgm_name, pgm_range in pgms.items():
-            doc_range = self.find_docstring(lines, pgm_range)
+        for pgm_name, pgm_dict in pgms.items():
+            doc_range = self.find_docstring_range(lines, pgm_dict['lines'])
+            pgms[pgm_name]['docstring'] = self.get_docstring(lines, doc_range)
 
+        self.page_text = self.assemble_page(lines, pgms)
 
     def find_programs(self, lines: List[str]) -> Dict[str, List[str]]:
         """Find line ranges of programs in Stata file
@@ -39,7 +30,8 @@ class DocstringParse(object):
         """
 
         # Find start of programs
-        regex = [r'^\s*\bpr(?:ogram|ogra|ogr|og|o)?\s+',
+        regex = [
+            r'^\s*\bpr(?:ogram|ogra|ogr|og|o)?\s+',
             r'(\bde(?:fine|fin|fi|f)?\s+)?',
             r'(?P<pgm_name>\b[A-Za-z_][A-Za-z0-9_]{0,31}\b)']
         program_re = re.compile(''.join(regex)).search
@@ -51,7 +43,8 @@ class DocstringParse(object):
         for i in range(len(start_lines)):
             if i == 0:
                 end_line = start_lines[1]
-                pgms['__header__'] = [start_lines[i], end_line]
+                pgms['__header__'] = {}
+                pgms['__header__']['lines'] = [start_lines[i], end_line]
                 continue
             start_line = start_lines[i]
             try:
@@ -61,14 +54,17 @@ class DocstringParse(object):
 
             program_name = program_re(lines[start_line]).group('pgm_name')
             end_line = [
-                ind + 1 for ind, x in enumerate(lines)
-                if ind in range(start_line, next_start_line) and program_end(x)][0]
+                ind + 1
+                for ind, x in enumerate(lines)
+                if ind in range(start_line, next_start_line) and program_end(x)
+            ][0]
 
-            pgms[program_name] = [start_line, end_line]
+            pgms[program_name] = {}
+            pgms[program_name]['lines'] = [start_line, end_line]
 
         return pgms
 
-    def find_docstring(self, lines: List[str], pgm_range: List[int]):
+    def find_docstring_range(self, lines: List[str], pgm_range: List[int]):
         """Find line ranges of docstring
 
         Args:
@@ -86,7 +82,8 @@ class DocstringParse(object):
                 ind for ind, x in enumerate(lines)
                 if ind in range(pgm_range[0], pgm_range[1]) and doc_start(x)][0]
             end_line = [
-                ind for ind, x in enumerate(lines)
+                ind + 1
+                for ind, x in enumerate(lines)
                 if ind in range(pgm_range[0], pgm_range[1]) and doc_end(x)][0]
         except IndexError:
             start_line = None
@@ -94,6 +91,39 @@ class DocstringParse(object):
 
         return [start_line, end_line]
 
+    def get_docstring(self, lines, doc_range) -> str:
+        """Get the text of the docstring
+
+        Dedents all lines by a common amount. Allows for text to begin
+        immediately after \"\"\" on the first line.
+
+        Returns: docstring text
+        """
+        if any(x is None for x in doc_range):
+            return ''
+
+        doc = lines[doc_range[0]:doc_range[1]]
+        # Remove starting docstring
+        doc[0] = re.sub(r'^\s*/\*\s*"""', '', doc[0])
+        # Remove ending docstring
+        doc[-1] = re.sub(r'"""\s*\*/', '', doc[-1])
+
+        # Dedent text
+        return doc[0] + dedent(''.join(doc[1:]))
+
+    def assemble_page(self, lines, pgms) -> str:
+        """Assemble docstrings into Markdown document"""
+
+        text = f'# Documentation for `{self.path.name}`\n\n'
+
+        if pgms['__header__']['docstring']:
+            text += f"## Overview\n\n{pgms['__header__']['docstring']}\n\n"
+
+        for pgm_name, pgm_dict in pgms.items():
+            if pgm_dict['docstring']:
+                text += f"## `{pgm_name}`\n\n#### {pgm_dict['docstring']}\n\n"
+
+        return text
 
     def find_syntax_cmd(self, text, pgm_range):
         """Find line ranges of syntax command
@@ -120,7 +150,6 @@ class DocstringParse(object):
                 break
 
         return [start_line, end_line]
-
 
     def parse_syntax_command(self, text, syntax_range):
         """Parse syntax command
